@@ -1,0 +1,34 @@
+# ============================================================
+#  SAFETY NET — never commit participant-level or raw data
+#  (adolescent data; IDs like sub-XXXXXX may be re-identifiable)
+# ============================================================
+*.edf
+*.fif
+*.set
+*.vhdr *.vmrk *.eeg
+*conversion_log*
+*private*
+participants.tsv
+bids_data_phenotypes/
+bids_data_behavior/
+preprocessing_output/
+behaviour_p3b_nd26.csv
+
+# Block ALL tabular data by default...
+*.tsv
+*.csv
+# ...but allow ONLY the de-identified pilot extract:
+!pilot_xy_alltrials_thr20.csv
+!data/pilot_xy_alltrials_thr20.csv
+
+# Notebook checkpoints & caches
+.ipynb_checkpoints/
+**/.ipynb_checkpoints/
+__pycache__/
+.Rproj.user/
+.Rhistory
+.RData
+
+# OS / editor
+.DS_Store
+Thumbs.db
