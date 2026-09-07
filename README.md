@@ -1,4 +1,4 @@
-# Social-media use and the occipital P3b in adolescents — Registered Report (Stage 1)
+# Social-media use and the P3b in adolescents — Registered Report (Stage 1)
 
 Analysis code for the pilot study and the power analysis supporting the Stage 1
 Registered Report. **No participant-level data are included in this repository.**
