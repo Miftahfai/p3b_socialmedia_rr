@@ -3,70 +3,120 @@
 #
 #   Outcome   : P3b difference wave (target - non-target, mean of O1/O2, 300-600 ms)
 #   Predictor : sm_composite_hrs (time-weighted daily social-media use)
-#   Test      : one-tailed Spearman rank correlation, H0: rho = 0, H1: rho < 0
-#
-# Method: Fisher z-based sample-size formula for a Spearman coefficient,
-#   May & Looney (2020), Journal of Biometrics & Biostatistics 11(2):440,
-#   eq. (7) and Table 1.  https://doi.org/10.37421/jbmbs.2020.11.440
-#
-#       n = b + c^2 * [ (z_alpha + z_power) / (z(rho1) - z(rho0)) ]^2
-#
-#   Spearman: b = 3 and c^2 = 1 + rho_s0^2 / 2, where rho_s0 is the NULL value
-#   (1.06 if |rho_s0| >= 0.95). Here the null is 0, so c^2 = 1.
-#   One-tailed: z_alpha replaces z_alpha/2. Non-integer results are rounded up.
-#
-# Planning effect size: safeguard-power approach (Perugini, Gallucci &
-#   Costantini, 2014) — the lower bound of a 60% CI around the pilot estimate.
-#   The interval uses the variance appropriate for a Spearman coefficient,
-#   var(z) = (1 + rho^2/2)/(n-3)  (Bonett & Wright, 2000), not the Pearson
-#   1/(n-3). Note this is the ALTERNATIVE rho, unlike c^2 in the sample-size
-#   formula above, which takes the NULL value.
-#
-# Usage: Rscript rr_power_spearman.R
-# =============================================================================
 
-# ---- Inputs -----------------------------------------------------------------
-PILOT_RHO <- 0.3264   # |rho| observed in the pilot (ND_p3b_composite_O1O2avg.R)
-PILOT_N   <- 86       # pilot analysable N
-CI_LEVEL  <- 0.60     # CI level for the safeguard anchor
-ALPHA     <- 0.05     # one-tailed
-POWER     <- 0.95     # >= 0.95 for frequentist plans
-RHO_NULL  <- 0        # null value of the Spearman coefficient
-RETENTION <- 86/120   # pilot data-retention rate
+# Assumptions:
+# - Independent participants.
+# - Social-media score frequencies follow the N = 86 pilot.
+# - P3b follows a normal distribution with the pilot mean and SD.
 
-# ---- Safeguard anchor: lower bound of a CI_LEVEL CI around the pilot rho ----
-safeguard_anchor <- function(rho, n, level = CI_LEVEL) {
-  z  <- atanh(rho)
-  se <- sqrt((1 + rho^2 / 2) / (n - 3))   # Bonett & Wright (2000) Spearman variance
-  zc <- qnorm(1 - (1 - level) / 2)
-  c(lower = tanh(z - zc * se), upper = tanh(z + zc * se))
+# 1. SETTINGS
+set.seed(123)
+N_values <- seq(100, 400, 25)
+nsim <- 10000
+alpha <- 0.05
+bound <- 0.20
+target_N <- 350
+p3b_mean <- 3.066516
+p3b_sd <- 4.510596
+
+# 2. SOCIAL-MEDIA SCORE DISTRIBUTION
+# Frequencies of the 25 ordered composite scores in the exploratory sample.
+counts <- c(1,1,4,2,1,1,8,4,3,2,7,9,3,3,3,6,1,1,5,4,1,1,7,5,3)
+prob <- counts / sum(counts)
+cumprob <- c(0, cumsum(prob))
+cumprob[length(cumprob)] <- 1
+cuts <- qnorm(cumprob)
+midranks <- head(cumprob, -1) + prob / 2
+
+# 3. CALIBRATE THE POPULATION SPEARMAN CORRELATION WITH TIES
+population_rho <- function(a) {
+  integrals <- sapply(seq_along(prob), function(j)
+    integrate(function(z) pnorm(a*z/sqrt(2-a^2))*dnorm(z),
+              cuts[j], cuts[j+1], rel.tol=1e-8)$value)
+  (sum(midranks*integrals)-0.25) /
+    sqrt(sum(prob*(midranks-0.5)^2)/12)
+}
+latent_r <- uniroot(function(a) population_rho(a)-bound,
+                    c(0, 0.95), tol=1e-8)$root
+
+# 4. SIMULATE ONE STUDY
+simulate <- function(n, scenario) {
+  a <- if (scenario == "Directional") -latent_r else 0
+  z <- rnorm(n)
+  x <- findInterval(z, cuts)
+  y <- p3b_mean + p3b_sd*(a*z + sqrt(1-a^2)*rnorm(n))
+  
+  if (scenario == "Directional") {
+    # One-sided Spearman test for a negative association.
+    passed <- cor.test(x, y, method="spearman",
+                       alternative="less", exact=FALSE)$p.value < alpha
+  } else {
+    # Equivalence: 90% Fisher-z CI with Bonett-Wright standard error.
+    r <- cor(x, y, method="spearman")
+    r <- max(-1+1e-12, min(1-1e-12, r))
+    se <- sqrt((1+r^2/2)/(n-3))
+    ci <- tanh(atanh(r) + c(-1,1)*qnorm(1-alpha)*se)
+    passed <- ci[1] > -bound && ci[2] < bound
+  }
+  
+  # Both scenarios also require a positive group-level P3b difference.
+  passed && t.test(y, mu=0, alternative="greater")$p.value < alpha
 }
 
-# ---- May & Looney (2020), eq. (7) + Table 1 ---------------------------------
-n_spearman <- function(rho1, rho0 = RHO_NULL, alpha = ALPHA, power = POWER,
-                       one_tailed = TRUE) {
-  za <- qnorm(1 - if (one_tailed) alpha else alpha / 2)
-  zb <- qnorm(power)
-  b  <- 3
-  c2 <- if (abs(rho0) < 0.95) 1 + rho0^2 / 2 else 1.06
-  ceiling(b + c2 * ((za + zb) / (atanh(rho1) - atanh(rho0)))^2)
+# 5. ESTIMATE POWER AND 95% MONTE CARLO UNCERTAINTY INTERVALS
+results <- list()
+for (n in N_values) {
+  message("Estimating power at N = ", n)
+  for (scenario in c("Directional", "Equivalence")) {
+    successes <- sum(replicate(nsim, simulate(n, scenario)))
+    ci <- binom.test(successes, nsim)$conf.int
+    results[[length(results)+1]] <- data.frame(
+      N=n, test=scenario, power=successes/nsim,
+      MC_lower=ci[1], MC_upper=ci[2])
+  }
+}
+power_curve <- do.call(rbind, results)
+print(power_curve, row.names=FALSE, digits=4)
+subset(power_curve, N == 350)
+
+# Results for the planned analysable sample.
+print(subset(power_curve, N == target_N), row.names=FALSE, digits=4)
+
+# 6. PLOT POWER CURVES
+colours <- c(Directional="#2369A0", Equivalence="#C66B18")
+symbols <- c(Directional=16, Equivalence=17)
+
+power_curve_png <- function() {
+  par(mar=c(4.5, 4.5, 1, 1))
+  plot(NA, xlim=range(N_values), ylim=c(0,1),
+     xlab="Analysable participants (N)", ylab="Estimated power",
+     yaxt="n", bty="l")
+  axis(2, at=seq(0,1,.1), labels=paste0(seq(0,100,10), "%"), las=1)
+  abline(h=.95, lty=2, col="grey35")
+  abline(v=target_N, lty=3, col="grey60")
+  
+  for (scenario in names(colours)) {
+    d <- subset(power_curve, test == scenario)
+    arrows(d$N, d$MC_lower, d$N, d$MC_upper,
+           angle=90, code=3, length=.025, col=colours[scenario])
+    lines(d$N, d$power, type="b", pch=symbols[scenario],
+          lwd=2, col=colours[scenario])
+  }
+  
+  legend("bottomright", bty="n", cex=.85,
+         legend=c("Directional: true Spearman rho = -0.20",
+                  "Equivalence (+/-0.20): true rho = 0",
+                  "95% power", paste("Planned N =", target_N)),
+         col=c("#2369A0", "#C66B18", "grey35", "grey60"),
+         pch=c(16, 17, NA, NA),
+         lty=c(1, 1, 2, 3),
+         lwd=c(2, 2, 1, 1),
+         pt.cex=1.2, seg.len=2, x.intersp=1)
 }
 
-# ---- Report -----------------------------------------------------------------
-ci     <- safeguard_anchor(PILOT_RHO, PILOT_N)
-anchor <- round(ci["lower"], 2)
-n_req  <- n_spearman(anchor)
+power_curve_png()
+png("power_curve.png", width = 9, height = 5, units = "in", res = 300)
+power_curve_png()
+dev.off()
 
-cat(sprintf("Pilot estimate        : rho = %.3f (N = %d)\n", PILOT_RHO, PILOT_N))
-cat(sprintf("%.0f%% CI                : [%.3f, %.3f]\n", 100*CI_LEVEL, ci["lower"], ci["upper"]))
-cat(sprintf("Safeguard anchor      : rho = %.2f\n\n", anchor))
-cat(sprintf("One-tailed alpha=%.2f, power=%.2f, null rho=%.2f\n", ALPHA, POWER, RHO_NULL))
-cat(sprintf("Required analysable N : %d\n", n_req))
-cat(sprintf("Recruit (retention %.1f%%): %d\n\n", 100*RETENTION, ceiling(n_req / RETENTION)))
 
-cat("Sensitivity to the anchor:\n")
-cat(sprintf("%8s %14s %10s\n", "rho", "analysable N", "recruit"))
-for (r in c(0.20, 0.22, 0.24, 0.26, 0.30)) {
-  n <- n_spearman(r)
-  cat(sprintf("%8.2f %14d %10d\n", r, n, ceiling(n / RETENTION)))
-}
